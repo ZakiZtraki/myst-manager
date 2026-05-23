@@ -2,6 +2,7 @@
 
 import sys
 import argparse
+import logging
 from pathlib import Path
 
 from .manager import PortfolioManager
@@ -89,6 +90,66 @@ def cmd_export(args):
     print(f"✅ Exported to {args.output}")
 
 
+def cmd_screen(args):
+    """Run the swap-target screener and rank destination candidates."""
+    from .screener import run_screener, ScreenerConfig
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format='%(asctime)s %(levelname)s %(name)s: %(message)s',
+    )
+
+    if args.config:
+        cfg = ScreenerConfig.from_json(args.config)
+    else:
+        cfg = ScreenerConfig()
+
+    # CLI overrides
+    if args.output_dir:
+        cfg.output_dir = args.output_dir
+    if args.top_n:
+        cfg.top_n = args.top_n
+    if args.cache_dir:
+        cfg.cache_dir = args.cache_dir
+
+    cfg = ScreenerConfig.from_env(base=cfg)
+
+    print(f"\n🔍 Screening swap targets for source: {args.source.upper()}")
+    print(f"   Config: {args.config or 'defaults'}")
+    print(f"   Output: {cfg.output_dir}\n")
+
+    result = run_screener(args.source, cfg, top_n=args.top_n)
+
+    ranked = [c for c in result['results'] if not c.get('hard_filtered')]
+    dropped = [c for c in result['results'] if c.get('hard_filtered')]
+    meta = result['metadata']
+
+    if not meta.get('source_on_binance'):
+        print(f"  ⚠️  {args.source.upper()} is not on Binance — used for context only\n")
+
+    print(f"{'Rank':<5} {'Symbol':<10} {'Score':>6}  {'Sortino':>8} {'RS90d':>7} {'Vol24h':>14} {'Spread':>8} {'Liq⚠':>5}")
+    print('-' * 68)
+    for c in ranked[:cfg.top_n]:
+        warn = '⚠' if c.get('liquidity_warning') else ''
+        print(
+            f"{c.get('overall_rank', ''):<5} "
+            f"{c.get('symbol', ''):<10} "
+            f"{c.get('composite_score', 0):>6.3f}  "
+            f"{c.get('sortino') or 0:>8.2f} "
+            f"{c.get('rs_90d') or 0:>7.2%} "
+            f"{c.get('volume_24h_binance') or 0:>14,.0f} "
+            f"{c.get('spread_bps') or 0:>7.1f}bps "
+            f"{warn:>5}"
+        )
+
+    if dropped:
+        print(f"\n  ⛔ {len(dropped)} candidates filtered out (200d SMA / liquidity / spread)")
+
+    if result.get('output_paths'):
+        print(f"\n  📄 CSV:  {result['output_paths']['csv']}")
+        print(f"  📄 JSON: {result['output_paths']['json']}")
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -136,7 +197,38 @@ def main():
     export_parser = subparsers.add_parser('export', help='Export to CSV')
     export_parser.add_argument('--output', default='portfolio.csv', help='Output file')
     export_parser.set_defaults(func=cmd_export)
-    
+
+    # screen command
+    screen_parser = subparsers.add_parser(
+        'screen',
+        help='Rank swap-target destination assets (CoinGecko universe + Binance metrics)',
+    )
+    screen_parser.add_argument(
+        '--source', required=True,
+        help='Symbol being rotated out of (e.g. MYST). Non-Binance assets are handled gracefully.',
+    )
+    screen_parser.add_argument(
+        '--config', default=None,
+        help='Path to screener_config.json (optional; uses built-in defaults if omitted)',
+    )
+    screen_parser.add_argument(
+        '--output-dir', dest='output_dir', default=None,
+        help='Override output directory for CSV/JSON',
+    )
+    screen_parser.add_argument(
+        '--top-n', dest='top_n', type=int, default=None,
+        help='Number of ranked results to show/write (default: 20)',
+    )
+    screen_parser.add_argument(
+        '--cache-dir', dest='cache_dir', default=None,
+        help='Override kline cache directory',
+    )
+    screen_parser.add_argument(
+        '-v', '--verbose', action='store_true',
+        help='Enable debug logging',
+    )
+    screen_parser.set_defaults(func=cmd_screen)
+
     args = parser.parse_args()
     
     if not args.command:
