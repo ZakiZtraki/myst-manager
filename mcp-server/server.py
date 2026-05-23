@@ -28,6 +28,7 @@ sys.path.insert(0, str(_REPO_ROOT / "crypto-portfolio" / "src"))
 
 from crypto_portfolio.api_client import COINGECKO_ID_MAP, CoinGeckoClient
 from crypto_portfolio.manager import PortfolioManager
+from crypto_portfolio.screener import ScreenerConfig, run_screener
 from crypto_portfolio.tax import TaxLotTracker
 from scheduler import TaskScheduler
 
@@ -53,7 +54,8 @@ mcp = FastMCP(
         "who earn MYST tokens and rebalance entirely via crypto-to-crypto swaps. "
         "Key tools: get_portfolio_status, get_recommendations (returns SWAP actions with "
         "routing when swap_routes is configured), update_portfolio_config (set targets and "
-        "myst_balance), record_swap (log a completed swap and update holdings). "
+        "myst_balance), record_swap (log a completed swap and update holdings), "
+        "screen_swap_targets (rank destination assets by Sortino/RS/liquidity composite score). "
         "Use schedule_task / list_scheduled_tasks / cancel_scheduled_task to automate "
         "recurring operations. Use trigger_task_now to run any task immediately."
     ),
@@ -275,6 +277,86 @@ def calculate_tax_summary(
             f"Total gain/loss:      ${summary['total_gain_loss']:+,.2f}\n"
             f"Transactions:         {summary['num_transactions']}\n"
         )
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def screen_swap_targets(
+    source_symbol: str,
+    top_n: int = 10,
+    screener_config_json: str = "",
+) -> str:
+    """Rank candidate destination assets for a crypto-to-crypto swap using quantitative metrics.
+
+    Builds a universe from CoinGecko, enriches each candidate with Binance market
+    data, applies hard filters (200d SMA, min liquidity, max spread), then scores
+    using a composite of Sortino ratio, RS vs BTC, liquidity, and diversification.
+
+    Args:
+        source_symbol:        Asset being swapped away from (e.g. 'MYST', 'POL').
+                              If not listed on Binance, shown for context only.
+        top_n:                Number of ranked candidates to return (default: 10).
+        screener_config_json: Optional JSON to override ScreenerConfig fields, e.g.
+                              '{"min_market_cap": 200000000, "max_spread_bps": 50,
+                                "weights": {"sortino": 0.35, "rs_vs_btc": 0.25,
+                                            "liquidity": 0.25, "diversification": 0.15}}'
+    """
+    try:
+        if screener_config_json:
+            overrides = json.loads(screener_config_json)
+            cfg = ScreenerConfig(**{k: v for k, v in overrides.items()
+                                    if k in ScreenerConfig.__dataclass_fields__})
+        else:
+            cfg = ScreenerConfig()
+
+        result = run_screener(source_symbol, cfg, top_n=top_n)
+        ranked = [c for c in result["results"] if c.get("composite_score") is not None]
+        dropped = [c for c in result["results"] if c.get("composite_score") is None]
+        meta = result["metadata"]
+
+        lines = [f"SCREENER RESULTS — swap targets for {source_symbol.upper()}\n"]
+
+        if not meta.get("source_on_binance"):
+            lines.append(
+                f"  ⚠  {source_symbol.upper()} is not on Binance — shown for context only\n"
+            )
+
+        lines.append(
+            f"Universe: {meta['total_candidates']} candidates  |  "
+            f"Passed filters: {meta['passed_hard_filters']}  |  "
+            f"Filtered out: {meta['dropped_by_filters']}\n"
+        )
+
+        header = f"{'Rank':<5} {'Symbol':<10} {'Score':>6}  {'Sortino':>8} {'RS90d':>7} {'Vol24h(USD)':>14} {'Spread':>9}"
+        lines += [header, "-" * len(header)]
+
+        for c in ranked[:top_n]:
+            warn = " ⚠" if c.get("liquidity_warning") else ""
+            lines.append(
+                f"{c.get('overall_rank', ''):< 5} "
+                f"{c.get('symbol', ''):<10} "
+                f"{c.get('composite_score', 0):>6.3f}  "
+                f"{c.get('sortino') or 0:>8.2f} "
+                f"{(c.get('rs_90d') or 0):>7.2%} "
+                f"{c.get('volume_24h_binance') or 0:>14,.0f} "
+                f"{c.get('spread_bps') or 0:>7.1f}bps"
+                f"{warn}"
+            )
+
+        if dropped:
+            lines.append(f"\n  ⛔ {len(dropped)} candidates filtered out (200d SMA / liquidity / spread):")
+            for c in dropped[:5]:
+                reason = c.get("filter_reason", "hard filter")
+                lines.append(f"     • {c.get('symbol', '?')}: {reason}")
+            if len(dropped) > 5:
+                lines.append(f"     … and {len(dropped) - 5} more")
+
+        if result.get("output_paths"):
+            lines.append(f"\nCSV:  {result['output_paths'].get('csv', 'n/a')}")
+            lines.append(f"JSON: {result['output_paths'].get('json', 'n/a')}")
+
+        return "\n".join(lines)
     except Exception as exc:
         return f"Error: {exc}"
 
