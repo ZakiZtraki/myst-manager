@@ -49,10 +49,13 @@ mcp = FastMCP(
     "Crypto Portfolio",
     instructions=(
         "Manage and monitor a cryptocurrency portfolio. "
-        "Use get_portfolio_status, get_recommendations, and get_daily_report "
-        "for portfolio insights. Use schedule_task / list_scheduled_tasks / "
-        "cancel_scheduled_task to automate recurring operations. "
-        "Use trigger_task_now to run any task immediately."
+        "Supports both cash-mode (BUY/SELL) and swap-only mode for MYST node operators "
+        "who earn MYST tokens and rebalance entirely via crypto-to-crypto swaps. "
+        "Key tools: get_portfolio_status, get_recommendations (returns SWAP actions with "
+        "routing when swap_routes is configured), update_portfolio_config (set targets and "
+        "myst_balance), record_swap (log a completed swap and update holdings). "
+        "Use schedule_task / list_scheduled_tasks / cancel_scheduled_task to automate "
+        "recurring operations. Use trigger_task_now to run any task immediately."
     ),
 )
 
@@ -86,7 +89,7 @@ def get_portfolio_status(format: str = "text") -> str:
 
 @mcp.tool()
 def get_recommendations() -> str:
-    """Return prioritised action recommendations (rebalance, profit-taking, DCA)."""
+    """Return prioritised action recommendations (rebalance, profit-taking, MYST deployment)."""
     try:
         recs = _portfolio_manager().get_recommendations()
         if not recs:
@@ -95,12 +98,16 @@ def get_recommendations() -> str:
         emoji = {"high": "🔴", "medium": "🟡", "low": "🟢"}
         lines = [f"{len(recs)} RECOMMENDATIONS:\n"]
         for i, r in enumerate(recs, 1):
+            action_label = r['action']
+            if r['action'] == 'SWAP' and 'from_asset' in r:
+                action_label = f"SWAP  {r.get('route', r['from_asset'] + ' → ' + r['asset'])}"
+                if 'from_amount' in r:
+                    action_label += f"  ({r['from_amount']} {r['from_asset']})"
             lines.append(
-                f"{i}. [{emoji.get(r['priority'], '⚪')} {r['priority'].upper()}] "
-                f"{r['action']} {r['asset']}"
+                f"{i}. [{emoji.get(r['priority'], '⚪')} {r['priority'].upper()}] {action_label}"
             )
-            lines.append(f"   Amount: ${r.get('amount_usd', 0):,.2f}")
-            lines.append(f"   Reason: {r['rationale']}\n")
+            lines.append(f"   USD value: ~${r.get('amount_usd', 0):,.2f}")
+            lines.append(f"   Reason:    {r['rationale']}\n")
         return "\n".join(lines)
     except Exception as exc:
         return f"Error: {exc}"
@@ -165,6 +172,79 @@ def export_portfolio_csv(output_path: str = "/data/portfolio_export.csv") -> str
     try:
         _portfolio_manager().export_to_csv(output_path)
         return f"Portfolio exported to {output_path}"
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def update_portfolio_config(
+    target_allocation_json: str = "",
+    myst_balance: float = -1,
+    swap_routes_json: str = "",
+    swap_config_json: str = "",
+) -> str:
+    """Update portfolio configuration and persist to disk.
+
+    Args:
+        target_allocation_json: JSON object mapping symbol → fraction (must sum to 1.0).
+                                e.g. '{"MYST": 0.15, "POL": 0.40, "BNB": 0.45}'
+        myst_balance:           Available MYST (node earnings) ready to deploy. -1 = no change.
+        swap_routes_json:       JSON swap-route map. e.g.
+                                '{"MYST": ["POL", "BNB"], "POL": ["MYST", "BNB"], "BNB": ["POL"]}'
+        swap_config_json:       JSON swap settings. e.g.
+                                '{"min_swap_usd": 50, "myst_keep_reserve": 200}'
+    """
+    try:
+        pm = _portfolio_manager()
+        target_allocation = json.loads(target_allocation_json) if target_allocation_json else None
+        swap_routes = json.loads(swap_routes_json) if swap_routes_json else None
+        swap_config = json.loads(swap_config_json) if swap_config_json else None
+        myst_bal = myst_balance if myst_balance >= 0 else None
+        pm.update_portfolio_config(
+            target_allocation=target_allocation,
+            myst_balance=myst_bal,
+            swap_routes=swap_routes,
+            swap_config=swap_config,
+        )
+        changes = []
+        if target_allocation:
+            changes.append(f"target_allocation: {target_allocation}")
+        if myst_bal is not None:
+            changes.append(f"myst_balance: {myst_bal}")
+        if swap_routes:
+            changes.append(f"swap_routes updated")
+        if swap_config:
+            changes.append(f"swap_config: {swap_config}")
+        return "Portfolio config updated:\n" + "\n".join(f"  • {c}" for c in changes)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def record_swap(
+    from_symbol: str,
+    from_amount: float,
+    to_symbol: str,
+    to_amount: float,
+) -> str:
+    """Record a completed crypto-to-crypto swap, updating holdings and myst_balance.
+
+    Swaps FROM MYST deduct from myst_balance (your node-income pool).
+    All other swaps deduct from holdings.
+
+    Args:
+        from_symbol: Asset you sold/swapped away (e.g. 'MYST', 'POL')
+        from_amount: Amount of from_symbol used
+        to_symbol:   Asset you received (e.g. 'BNB', 'POL')
+        to_amount:   Amount of to_symbol received
+    """
+    try:
+        _portfolio_manager().record_swap(from_symbol, from_amount, to_symbol, to_amount)
+        return (
+            f"Swap recorded: {from_amount} {from_symbol.upper()} → "
+            f"{to_amount} {to_symbol.upper()}\n"
+            f"Holdings updated. Run get_portfolio_status to see new allocation."
+        )
     except Exception as exc:
         return f"Error: {exc}"
 

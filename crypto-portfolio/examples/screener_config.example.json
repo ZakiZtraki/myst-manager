@@ -1,0 +1,30 @@
+{
+  "_comment": "Swap-target screener configuration. Copy to screener_config.json and adjust.",
+
+  "min_market_cap":          100000000,
+  "min_24h_volume":          1000000,
+  "max_rank":                300,
+  "universe_pages":          3,
+
+  "require_above_200d_sma":  true,
+  "min_liquidity_volume_24h": 500000,
+  "max_spread_bps":          100.0,
+
+  "risk_free_rate":          0.0,
+  "lookback_days":           365,
+
+  "weights": {
+    "sortino":         0.30,
+    "rs_vs_btc":       0.25,
+    "liquidity":       0.25,
+    "diversification": 0.20
+  },
+
+  "cache_dir":       ".screener_cache",
+  "cache_ttl_hours": 4.0,
+
+  "max_weight_per_min": 1100,
+
+  "output_dir": "screener_output",
+  "top_n":      20
+}

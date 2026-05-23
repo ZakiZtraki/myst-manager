@@ -23,6 +23,8 @@ COINGECKO_ID_MAP = {
     'TRX': 'tron',
     'DOT': 'polkadot',
     'MATIC': 'matic-network',
+    'POL': 'matic-network',  # POL is the rebranded MATIC on Polygon
+    'MYST': 'mysterium',     # Mysterium Network node token
     'LTC': 'litecoin',
     'SHIB': 'shiba-inu',
     'AVAX': 'avalanche-2',
@@ -139,6 +141,24 @@ class CoinGeckoClient:
             {'timestamp': p[0], 'price': p[1]}
             for p in data.get('prices', [])
         ]
+
+    def fetch_moving_averages(self, symbol: str) -> Dict:
+        """
+        Fetch 7-day and 30-day simple moving averages for a symbol.
+
+        Returns dict with keys: current_price, ma_7d, ma_30d
+        """
+        history = self.fetch_historical(symbol, days=30)
+        if not history:
+            return {}
+        prices = [p['price'] for p in history]
+        result = {'ma_30d': sum(prices) / len(prices) if prices else None}
+        if len(prices) >= 7:
+            result['ma_7d'] = sum(prices[-7:]) / 7
+        else:
+            result['ma_7d'] = None
+        result['current_price'] = prices[-1] if prices else None
+        return result
 
 
 class BinanceClient:
