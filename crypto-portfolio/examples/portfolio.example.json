@@ -1,0 +1,39 @@
+{
+  "holdings": [
+    {
+      "symbol": "BTC",
+      "amount": 0.5,
+      "avg_purchase_price": 45000,
+      "purchase_dates": ["2024-01-15", "2024-03-20"]
+    },
+    {
+      "symbol": "ETH",
+      "amount": 10,
+      "avg_purchase_price": 2800,
+      "purchase_dates": ["2024-02-10"]
+    },
+    {
+      "symbol": "SOL",
+      "amount": 100,
+      "avg_purchase_price": 85,
+      "purchase_dates": ["2024-03-01"]
+    }
+  ],
+  "cash_reserves": 5000,
+  "target_allocation": {
+    "BTC": 0.50,
+    "ETH": 0.30,
+    "SOL": 0.15,
+    "stablecoins": 0.05
+  },
+  "alert_config": {
+    "BTC": {
+      "above": 50000,
+      "below": 40000
+    },
+    "ETH": {
+      "above": 3000,
+      "below": 2500
+    }
+  }
+}
