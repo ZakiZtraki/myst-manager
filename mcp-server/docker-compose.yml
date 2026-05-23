@@ -1,0 +1,39 @@
+version: '3.8'
+
+# Standalone compose for the MCP server.
+# To integrate with myst-node, copy the mcp-server service block
+# into myst-node/docker-compose.yml and add it to the proxy_d network.
+
+services:
+  mcp-server:
+    build:
+      context: ..          # repo root — needs both crypto-portfolio/ and mcp-server/
+      dockerfile: mcp-server/Dockerfile
+    container_name: mcp-server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PORTFOLIO_FILE=/data/portfolio.json
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+      - USE_BINANCE=${USE_BINANCE:-false}
+    volumes:
+      - mcp_data:/data
+    ports:
+      # Expose locally only; use SWAG proxy for HTTPS access
+      - "127.0.0.1:8000:8000"
+    networks:
+      - mcp_net
+
+  # Uncomment to add to the existing SWAG proxy network instead of standalone:
+  # networks:
+  #   - proxy_d   # from myst-node/docker-compose.yml
+
+networks:
+  mcp_net:
+    name: mcp_net
+    driver: bridge
+
+volumes:
+  mcp_data:
+    name: mcp_data

@@ -1,2 +1,33 @@
+# Secrets & environment files
 .env
-./envs/*
+envs/*
+myst-node/envs/*
+mcp-server/.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# Portfolio data (contains real holdings — never commit)
+portfolio.json
+**/portfolio.json
+*.csv
+
+# Test & coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# macOS
+.DS_Store
