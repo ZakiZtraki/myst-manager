@@ -225,13 +225,59 @@ class BinanceClient:
     def get_trade_history(self, symbol: str, limit: int = 100) -> List[Dict]:
         """
         Fetch trade history for a symbol.
-        
+
         Args:
             symbol: Trading pair (e.g., 'BTCUSDT')
             limit: Number of trades to fetch
-        
+
         Returns:
             List of trade records
         """
         params = {'symbol': symbol, 'limit': limit}
         return self._make_request('/api/v3/myTrades', params)
+
+    def _make_post_request(self, endpoint: str, params: Dict = None) -> Dict:
+        """Make authenticated POST request to Binance API."""
+        params = params or {}
+        params['timestamp'] = int(time.time() * 1000)
+
+        signature = self._sign_request(params)
+        params['signature'] = signature
+
+        url = f"{self.BASE_URL}{endpoint}"
+        headers = {'X-MBX-APIKEY': self.api_key}
+
+        response = requests.post(url, headers=headers, params=params)
+        response.raise_for_status()
+
+        return response.json()
+
+    def get_funding_wallet_balance(self, asset: str) -> float:
+        """
+        Fetch free balance of an asset in the Binance Funding Wallet.
+
+        Args:
+            asset: Asset symbol (e.g., 'MYST')
+
+        Returns:
+            Free balance as float (0.0 if asset not found)
+        """
+        data = self._make_post_request('/sapi/v1/asset/get-funding-asset', {'asset': asset})
+        for entry in data:
+            if entry.get('asset') == asset:
+                return float(entry.get('free', 0))
+        return 0.0
+
+    def transfer_to_spot(self, asset: str, amount: float) -> Dict:
+        """
+        Transfer an asset from Funding Wallet to Spot (trading) account.
+
+        Args:
+            asset:  Asset symbol (e.g., 'MYST')
+            amount: Amount to transfer
+
+        Returns:
+            Response dict containing 'tranId'
+        """
+        params = {'type': 'FUNDING_MAIN', 'asset': asset, 'amount': str(amount)}
+        return self._make_post_request('/sapi/v1/asset/transfer', params)

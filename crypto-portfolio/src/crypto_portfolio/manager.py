@@ -83,6 +83,65 @@ class PortfolioManager:
         self._save_portfolio()
         return balances
     
+    def transfer_myst_to_spot(self, amount: float = None) -> Dict:
+        """
+        Transfer MYST from Binance Funding Wallet to Spot (trading) account.
+
+        If amount is None, transfers all MYST above myst_keep_reserve.
+        Skips if the transfer value is below min_swap_usd.
+
+        Args:
+            amount: Explicit MYST amount to transfer, or None for auto.
+
+        Returns:
+            Result dict with 'status', and on success: 'transferred', 'tran_id'.
+        """
+        if not self.binance:
+            raise ValueError("Binance client not initialized. Set use_binance=True")
+
+        swap_config = self.portfolio_data.get('swap_config', {})
+        keep_reserve = float(swap_config.get('myst_keep_reserve', 0))
+        min_swap_usd = float(swap_config.get('min_swap_usd', 50))
+
+        funding_balance = self.binance.get_funding_wallet_balance('MYST')
+
+        if amount is None:
+            transfer_amount = max(0.0, funding_balance - keep_reserve)
+        else:
+            transfer_amount = float(amount)
+
+        if transfer_amount <= 0:
+            return {
+                'status': 'skipped',
+                'reason': 'No MYST above reserve',
+                'funding_balance': funding_balance,
+            }
+
+        try:
+            prices = self.coingecko.fetch_prices(['MYST'])
+            myst_price = prices.get('mysterium', {}).get('usd', 0)
+        except Exception:
+            myst_price = 0
+
+        if myst_price > 0 and transfer_amount * myst_price < min_swap_usd:
+            return {
+                'status': 'skipped',
+                'reason': (
+                    f"Transfer value ${transfer_amount * myst_price:.2f} "
+                    f"below min_swap_usd ${min_swap_usd}"
+                ),
+                'funding_balance': funding_balance,
+            }
+
+        result = self.binance.transfer_to_spot('MYST', transfer_amount)
+        return {
+            'status': 'transferred',
+            'transferred': transfer_amount,
+            'funding_balance': funding_balance,
+            'kept_reserve': keep_reserve,
+            'tran_id': result.get('tranId'),
+        }
+
     def get_status(self, format: str = 'dict') -> Dict:
         """
         Get current portfolio status.

@@ -24,6 +24,7 @@ VALID_TASK_TYPES = [
     "sync_binance",
     "check_recommendations",
     "get_status",
+    "transfer_myst",
 ]
 
 
@@ -67,6 +68,15 @@ class TaskScheduler:
 
         if task_type == "get_status":
             return pm.get_status(format="text")
+
+        if task_type == "transfer_myst":
+            result = pm.transfer_myst_to_spot()
+            if result['status'] == 'transferred':
+                return (
+                    f"Transferred {result['transferred']} MYST to Spot account "
+                    f"(tran_id={result['tran_id']})"
+                )
+            return f"Transfer skipped: {result['reason']}"
 
         raise ValueError(f"Unknown task type '{task_type}'. Valid: {VALID_TASK_TYPES}")
 

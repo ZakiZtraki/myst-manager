@@ -165,6 +165,32 @@ def sync_from_binance() -> str:
 
 
 @mcp.tool()
+def transfer_myst_to_trade_account(amount: float = -1) -> str:
+    """Transfer MYST from Binance Funding Wallet to Spot (trade) account.
+
+    Requires BINANCE_API_KEY + BINANCE_API_SECRET and USE_BINANCE=true.
+
+    Args:
+        amount: MYST to transfer. -1 (default) = auto: all above myst_keep_reserve.
+                Skips if value is below min_swap_usd threshold.
+    """
+    try:
+        pm = PortfolioManager(PORTFOLIO_FILE, use_binance=True)
+        transfer_amount = None if amount < 0 else amount
+        result = pm.transfer_myst_to_spot(transfer_amount)
+        if result['status'] == 'transferred':
+            return (
+                f"Transfer complete: {result['transferred']} MYST → Spot account\n"
+                f"  Transaction ID:      {result['tran_id']}\n"
+                f"  Funding balance was: {result['funding_balance']} MYST\n"
+                f"  Reserve kept:        {result['kept_reserve']} MYST"
+            )
+        return f"Transfer skipped: {result['reason']}"
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
 def export_portfolio_csv(output_path: str = "/data/portfolio_export.csv") -> str:
     """Export current portfolio snapshot to a CSV file.
 
@@ -376,7 +402,7 @@ def schedule_task(
     """Schedule a recurring portfolio task.
 
     Args:
-        task_type:      'daily_report' | 'sync_binance' | 'check_recommendations' | 'get_status'
+        task_type:      'daily_report' | 'sync_binance' | 'check_recommendations' | 'get_status' | 'transfer_myst'
         trigger_type:   'cron' | 'interval'
         trigger_config: JSON trigger parameters.
                         cron example:     {"hour": 9, "minute": 0}  (daily at 09:00 UTC)
@@ -435,7 +461,7 @@ def trigger_task_now(task_type: str) -> str:
     """Execute a portfolio task immediately and return its output.
 
     Args:
-        task_type: 'daily_report' | 'sync_binance' | 'check_recommendations' | 'get_status'
+        task_type: 'daily_report' | 'sync_binance' | 'check_recommendations' | 'get_status' | 'transfer_myst'
     """
     try:
         return scheduler.run_task_now(task_type)
