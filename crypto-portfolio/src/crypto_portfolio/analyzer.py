@@ -25,19 +25,8 @@ class PortfolioAnalyzer:
             'risk_metrics': {}
         }
         
-        # Map symbol to CoinGecko ID
-        symbol_map = {
-            'BTC': 'bitcoin',
-            'ETH': 'ethereum',
-            'SOL': 'solana',
-            'USDT': 'tether',
-            'USDC': 'usd-coin',
-            'BNB': 'binancecoin',
-            'XRP': 'ripple',
-            'ADA': 'cardano',
-            'DOGE': 'dogecoin',
-            'MATIC': 'matic-network',
-        }
+        # Map symbol to CoinGecko ID (kept in sync with api_client.COINGECKO_ID_MAP)
+        from .api_client import COINGECKO_ID_MAP as symbol_map
         
         for holding in holdings:
             symbol = holding['symbol']
