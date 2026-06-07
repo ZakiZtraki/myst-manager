@@ -1,47 +1,80 @@
 {
-  "_comment": "MYST node operator portfolio — swap-only mode, no fiat. Copy to portfolio.json.",
-  "holdings": [
-    {
-      "symbol": "MYST",
-      "amount": 2500,
-      "avg_purchase_price": 0,
-      "purchase_dates": []
-    },
-    {
-      "symbol": "POL",
-      "amount": 1200,
-      "avg_purchase_price": 0.42,
-      "purchase_dates": ["2024-06-01"]
-    },
-    {
-      "symbol": "BNB",
-      "amount": 3.5,
-      "avg_purchase_price": 280,
-      "purchase_dates": ["2024-05-15"]
+  "_comment": "MYST node operator portfolio - wallet-first layout, swap-only mode, no fiat. Copy to portfolio.json.",
+  "wallets": {
+    "binance": {
+      "web3": {
+        "assets": [
+          {
+            "symbol": "MYST",
+            "amount": 850,
+            "avg_purchase_price": 0,
+            "purchase_dates": []
+          }
+        ]
+      },
+      "funding": {
+        "assets": [
+          {
+            "symbol": "MYST",
+            "amount": 2500,
+            "avg_purchase_price": 0,
+            "purchase_dates": []
+          }
+        ]
+      },
+      "spot": {
+        "assets": [
+          {
+            "symbol": "POL",
+            "amount": 1200,
+            "avg_purchase_price": 0.42,
+            "purchase_dates": [
+              "2024-06-01"
+            ]
+          },
+          {
+            "symbol": "BNB",
+            "amount": 3.5,
+            "avg_purchase_price": 280,
+            "purchase_dates": [
+              "2024-05-15"
+            ]
+          }
+        ]
+      }
     }
-  ],
-
-  "myst_balance": 850,
-
+  },
   "target_allocation": {
     "MYST": 0.15,
-    "POL": 0.40,
+    "POL": 0.4,
     "BNB": 0.45
   },
-
   "swap_routes": {
-    "MYST": ["POL", "BNB"],
-    "POL":  ["MYST", "BNB"],
-    "BNB":  ["POL", "MYST"]
+    "MYST": [
+      "POL",
+      "BNB"
+    ],
+    "POL": [
+      "MYST",
+      "BNB"
+    ],
+    "BNB": [
+      "POL",
+      "MYST"
+    ]
   },
-
   "swap_config": {
     "min_swap_usd": 50,
     "myst_keep_reserve": 200
   },
-
   "alert_config": {
-    "MYST": { "above": 0.15, "below": 0.05 },
-    "BNB":  { "above": 400,  "below": 200  }
+    "MYST": {
+      "above": 0.15,
+      "below": 0.05
+    },
+    "BNB": {
+      "above": 400,
+      "below": 200
+    }
   }
 }

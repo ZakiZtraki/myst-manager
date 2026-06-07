@@ -10,6 +10,8 @@ services:
       context: ..          # repo root — needs both crypto-portfolio/ and mcp-server/
       dockerfile: mcp-server/Dockerfile
     container_name: mcp-server
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
     restart: unless-stopped
     env_file: .env
     environment:
@@ -17,11 +19,12 @@ services:
       - MCP_HOST=0.0.0.0
       - MCP_PORT=8000
       - USE_BINANCE=${USE_BINANCE:-false}
+      - MYST_WALLET_ADDRESS=${MYST_WALLET_ADDRESS:-0x3fade093f91d6bddbdb802c01fab2a949bac3fa6}
     volumes:
-      - mcp_data:/data
+      - C:/Users/vlbir/OneDrive/source/myst-manager/crypto-portfolio/portfolio.json:/data/portfolio.json
     ports:
-      # Expose locally only; use SWAG proxy for HTTPS access
-      - "127.0.0.1:8000:8000"
+      # Expose locally only; use reverse proxy for HTTPS access
+      - "8000:8000"
     networks:
       - mcp_net
 
@@ -33,7 +36,3 @@ networks:
   mcp_net:
     name: mcp_net
     driver: bridge
-
-volumes:
-  mcp_data:
-    name: mcp_data

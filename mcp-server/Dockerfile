@@ -1,11 +1,22 @@
+FROM node:22-slim AS node
+
 FROM python:3.11-slim
 
 WORKDIR /app
+
+# Bring Node 22 + npm into the Python image for Binance Agentic Wallet CLI.
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Binance Web3 Wallet CLI used by the MCP Web3 tools.
+RUN npm install -g @binance/agentic-wallet
 
 # Install crypto-portfolio dependencies
 COPY crypto-portfolio/requirements.txt /tmp/cp_requirements.txt
@@ -33,6 +44,6 @@ ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/sse')" || exit 1
+    CMD python -c "import socket; s=socket.create_connection(('localhost', 8000), 5); s.close()" || exit 1
 
 CMD ["python", "server.py"]

@@ -26,7 +26,7 @@ pip install -r requirements.txt
 # Copy example config
 cp examples/portfolio.example.json portfolio.json
 
-# Edit portfolio.json with your holdings
+# Edit portfolio.json with your wallet balances
 nano portfolio.json
 ```
 
@@ -73,22 +73,35 @@ python -m crypto_portfolio export --output portfolio_history.csv
 
 ```json
 {
-  "holdings": [
-    {
-      "symbol": "BTC",
-      "amount": 0.5,
-      "avg_purchase_price": 45000,
-      "purchase_dates": ["2024-01-15", "2024-03-20"]
+  "wallets": {
+    "binance": {
+      "web3": {
+        "assets": [
+          { "symbol": "MYST", "amount": 232.73477, "avg_purchase_price": 0 }
+        ]
+      },
+      "funding": {
+        "assets": []
+      },
+      "spot": {
+        "assets": [
+          { "symbol": "POL", "amount": 419.78264903, "avg_purchase_price": 0.1618104447268278 },
+          { "symbol": "BNB", "amount": 0.08205277, "avg_purchase_price": 794.9966833722866 }
+        ]
+      }
     }
-  ],
-  "cash_reserves": 5000,
+  },
   "target_allocation": {
-    "BTC": 0.50,
-    "ETH": 0.30,
-    "stablecoins": 0.20
+    "POL": 0.25,
+    "BNB": 0.35,
+    "ZEC": 0.30,
+    "TRX": 0.10
   }
 }
 ```
+
+Wallet assets are grouped by where they live. The manager aggregates them into
+flat holdings internally for analysis, recommendations, and reports.
 
 ### Binance API Integration (Optional)
 

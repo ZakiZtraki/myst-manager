@@ -40,16 +40,20 @@ cp examples/portfolio.example.json portfolio.json
 cp examples/portfolio.myst.example.json portfolio.json
 ```
 
-Edit `portfolio.json` with your actual holdings. Key fields:
+Edit `portfolio.json` with your actual wallet balances. Key fields:
 
 | Field | Description |
 | --- | --- |
-| `holdings` | List of assets with `symbol`, `amount`, `avg_purchase_price` |
+| `wallets.binance.web3.assets` | Assets and amounts in the Binance Web3 wallet |
+| `wallets.binance.funding.assets` | Assets and amounts in the Binance Funding wallet |
+| `wallets.binance.spot.assets` | Assets and amounts in the Binance Spot wallet |
 | `target_allocation` | Desired % per asset (must sum to 1.0) |
-| `myst_balance` | (MYST mode) Undeployed MYST earnings ready to swap |
 | `swap_routes` | (MYST mode) Allowed swap pairs per asset |
 | `swap_config.min_swap_usd` | Minimum swap size in USD |
 | `swap_config.myst_keep_reserve` | MYST amount never to touch |
+
+The portfolio manager aggregates wallet assets into flat holdings internally for
+analysis, recommendations, and reports.
 
 ### Optional: Binance API
 
@@ -199,7 +203,7 @@ Restart Claude Code. You should see the `crypto-portfolio` server listed in `/mc
 | `get_recommendations` | Prioritised actions (BUY / SELL / SWAP / DCA) |
 | `get_daily_report` | Full daily summary |
 | `check_prices` | Live prices for given symbols |
-| `update_portfolio_config` | Update targets, myst_balance, swap_routes |
+| `update_portfolio_config` | Update targets, wallet-derived MYST balance, swap_routes |
 | `record_swap` | Log a completed crypto-to-crypto swap |
 | `transfer_myst_to_trade_account` | Move MYST from Binance Funding Wallet → Spot account (auto or explicit amount) |
 | `sync_from_binance` | Pull live balances from Binance |
@@ -219,7 +223,7 @@ Restart Claude Code. You should see the `crypto-portfolio` server listed in `/mc
 MYST node operators earn MYST tokens and rebalance entirely via crypto-to-crypto swaps (no fiat in or out). The recommended setup:
 
 1. Copy `examples/portfolio.myst.example.json` → `portfolio.json`
-2. Set `myst_balance` to your current undeployed MYST earnings
+2. Put your current MYST earnings under the correct wallet in `wallets.binance.*.assets`
 3. Configure `swap_routes` for your exchange (e.g. MYST→POL, MYST→BNB)
 4. **Transfer MYST to your Spot account** — Mysterium node payouts land in the Binance Funding Wallet, not the trading account. Call `transfer_myst_to_trade_account` to move them over automatically:
    - `amount=-1` (default): transfers everything above `myst_keep_reserve`, skips if below `min_swap_usd`

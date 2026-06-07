@@ -3,6 +3,7 @@
 import sys
 import argparse
 import logging
+import json
 from pathlib import Path
 
 from .manager import PortfolioManager
@@ -150,6 +151,34 @@ def cmd_screen(args):
         print(f"  📄 JSON: {result['output_paths']['json']}")
 
 
+def cmd_swap_preview(args):
+    """Preview a Binance token swap without executing it."""
+    pm = PortfolioManager(args.portfolio, use_binance=True)
+    preview = pm.preview_binance_swap(
+        args.from_symbol,
+        args.to_symbol,
+        from_amount=args.amount,
+        amount_usd=args.amount_usd,
+        prefer_convert=not args.no_convert,
+    )
+    print(json.dumps(preview, indent=2, default=str))
+
+
+def cmd_swap_execute(args):
+    """Execute a Binance token swap when explicit confirmation is provided."""
+    pm = PortfolioManager(args.portfolio, use_binance=True)
+    result = pm.execute_binance_swap(
+        args.from_symbol,
+        args.to_symbol,
+        from_amount=args.amount,
+        amount_usd=args.amount_usd,
+        confirm=args.confirm,
+        prefer_convert=not args.no_convert,
+        quote_id=args.quote_id,
+    )
+    print(json.dumps(result, indent=2, default=str))
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -228,6 +257,36 @@ def main():
         help='Enable debug logging',
     )
     screen_parser.set_defaults(func=cmd_screen)
+
+    # swap-preview command
+    swap_preview_parser = subparsers.add_parser(
+        'swap-preview',
+        help='Preview a Binance Convert/Spot token swap without placing an order',
+    )
+    swap_preview_parser.add_argument('--from', dest='from_symbol', required=True, help='Asset to swap from')
+    swap_preview_parser.add_argument('--to', dest='to_symbol', required=True, help='Asset to receive')
+    swap_preview_parser.add_argument('--amount', type=float, default=None, help='Amount of source asset')
+    swap_preview_parser.add_argument('--amount-usd', type=float, default=None, help='Approximate USD value to swap')
+    swap_preview_parser.add_argument('--no-convert', action='store_true', help='Skip Binance Convert and preview Spot route only')
+    swap_preview_parser.set_defaults(func=cmd_swap_preview)
+
+    # swap-execute command
+    swap_execute_parser = subparsers.add_parser(
+        'swap-execute',
+        help='Execute a Binance token swap and record the actual fill in the portfolio',
+    )
+    swap_execute_parser.add_argument('--from', dest='from_symbol', required=True, help='Asset to swap from')
+    swap_execute_parser.add_argument('--to', dest='to_symbol', required=True, help='Asset to receive')
+    swap_execute_parser.add_argument('--amount', type=float, default=None, help='Amount of source asset')
+    swap_execute_parser.add_argument('--amount-usd', type=float, default=None, help='Approximate USD value to swap')
+    swap_execute_parser.add_argument('--quote-id', default=None, help='Optional Binance Convert quote ID to accept')
+    swap_execute_parser.add_argument('--no-convert', action='store_true', help='Skip Binance Convert and execute Spot route only')
+    swap_execute_parser.add_argument(
+        '--confirm',
+        action='store_true',
+        help='Required for live Binance execution; omitted means preview only',
+    )
+    swap_execute_parser.set_defaults(func=cmd_swap_execute)
 
     args = parser.parse_args()
     
