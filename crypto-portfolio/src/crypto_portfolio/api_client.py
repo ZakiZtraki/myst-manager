@@ -25,6 +25,8 @@ COINGECKO_ID_MAP = {
     'MATIC': 'matic-network',
     'POL': 'matic-network',  # POL is the rebranded MATIC on Polygon
     'MYST': 'mysterium',     # Mysterium Network node token
+    'ZEC': 'zcash',
+    'FDUSD': 'first-digital-usd',
     'LTC': 'litecoin',
     'SHIB': 'shiba-inu',
     'AVAX': 'avalanche-2',
@@ -281,3 +283,34 @@ class BinanceClient:
         """
         params = {'type': 'FUNDING_MAIN', 'asset': asset, 'amount': str(amount)}
         return self._make_post_request('/sapi/v1/asset/transfer', params)
+
+    def get_convert_quote(self, from_asset: str, to_asset: str, from_amount: float) -> Dict:
+        """
+        Get a Binance Convert quote (Spot wallet).
+
+        Args:
+            from_asset:  Asset to sell (e.g. 'TRX')
+            to_asset:    Asset to buy (e.g. 'BNB')
+            from_amount: Amount of from_asset to convert
+
+        Returns:
+            Dict with quoteId, toAmount, ratio, etc.
+        """
+        params = {
+            'fromAsset': from_asset.upper(),
+            'toAsset': to_asset.upper(),
+            'fromAmount': str(from_amount),
+        }
+        return self._make_post_request('/sapi/v1/convert/getQuote', params)
+
+    def accept_convert_quote(self, quote_id: str) -> Dict:
+        """
+        Accept and execute a previously fetched Binance Convert quote.
+
+        Args:
+            quote_id: The quoteId from get_convert_quote
+
+        Returns:
+            Dict with orderId, status
+        """
+        return self._make_post_request('/sapi/v1/convert/acceptQuote', {'quoteId': quote_id})

@@ -20,7 +20,7 @@ import os
 import sys
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver.server import MCPServer as FastMCP
 
 # Resolve crypto-portfolio package relative to this file
 _REPO_ROOT = Path(__file__).parent.parent
@@ -186,6 +186,95 @@ def transfer_myst_to_trade_account(amount: float = -1) -> str:
                 f"  Reserve kept:        {result['kept_reserve']} MYST"
             )
         return f"Transfer skipped: {result['reason']}"
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def transfer_asset_to_trade_account(asset: str, amount: float = -1) -> str:
+    """Transfer any asset from Binance Funding Wallet to Spot account via Universal Transfer.
+
+    Use this to move POL, TRX, BNB, etc. from Funding to Spot so they can be swapped.
+
+    Args:
+        asset:  Symbol to transfer (e.g. 'POL', 'TRX', 'BNB').
+        amount: Amount to transfer. -1 (default) = transfer full Funding balance.
+    """
+    try:
+        from crypto_portfolio.api_client import BinanceClient
+        client = BinanceClient()
+
+        if amount < 0:
+            funding_bal = client.get_funding_wallet_balance(asset.upper())
+            if funding_bal <= 0:
+                return f"Nothing to transfer: {asset.upper()} Funding balance is 0."
+            amount = funding_bal
+
+        result = client.transfer_to_spot(asset.upper(), amount)
+        return (
+            f"Transfer complete: {amount} {asset.upper()} → Spot account\n"
+            f"  Transaction ID: {result.get('tranId', result)}"
+        )
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def preview_binance_convert(from_asset: str, to_asset: str, from_amount: float) -> str:
+    """Get a live Binance Convert quote without executing it.
+
+    Shows how much you would receive if you convert now. Quote expires in ~10 seconds.
+
+    Args:
+        from_asset:  Asset to sell (must be in Spot wallet), e.g. 'TRX', 'POL'
+        to_asset:    Asset to receive, e.g. 'BNB', 'ZEC'
+        from_amount: Amount of from_asset to convert
+    """
+    try:
+        from crypto_portfolio.api_client import BinanceClient
+        client = BinanceClient()
+        q = client.get_convert_quote(from_asset, to_asset, from_amount)
+        return (
+            f"Convert Quote:\n"
+            f"  {from_amount} {from_asset.upper()} → {q.get('toAmount', '?')} {to_asset.upper()}\n"
+            f"  Rate:     1 {from_asset.upper()} = {q.get('ratio', '?')} {to_asset.upper()}\n"
+            f"  Quote ID: {q.get('quoteId', '?')}\n"
+            f"  Valid:    ~10 seconds\n\n"
+            f"To execute: call execute_binance_convert with same arguments."
+        )
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def execute_binance_convert(from_asset: str, to_asset: str, from_amount: float) -> str:
+    """Execute a Binance Convert swap (Spot wallet → Spot wallet).
+
+    Fetches a live quote and immediately accepts it. Asset must be in Spot account.
+    After the swap, call record_swap to update portfolio.json.
+
+    Args:
+        from_asset:  Asset to sell (e.g. 'TRX', 'POL', 'BNB')
+        to_asset:    Asset to receive (e.g. 'BNB', 'ZEC', 'TRX')
+        from_amount: Amount of from_asset to convert
+    """
+    try:
+        from crypto_portfolio.api_client import BinanceClient
+        import time
+        client = BinanceClient()
+        q = client.get_convert_quote(from_asset, to_asset, from_amount)
+        quote_id = q.get('quoteId')
+        to_amount = q.get('toAmount', 0)
+        if not quote_id:
+            return f"Quote failed: {q}"
+        result = client.accept_convert_quote(quote_id)
+        status = result.get('orderStatus', result.get('status', 'unknown'))
+        return (
+            f"Convert {status.upper()}\n"
+            f"  {from_amount} {from_asset.upper()} → {to_amount} {to_asset.upper()}\n"
+            f"  Order ID: {result.get('orderId', '?')}\n\n"
+            f"Run: record_swap('{from_asset.upper()}', {from_amount}, '{to_asset.upper()}', {to_amount})"
+        )
     except Exception as exc:
         return f"Error: {exc}"
 
@@ -652,4 +741,4 @@ def scheduler_results() -> str:
 
 if __name__ == "__main__":
     logger.info("Starting Crypto Portfolio MCP Server on %s:%d", MCP_HOST, MCP_PORT)
-    mcp.run(transport="sse", host=MCP_HOST, port=MCP_PORT)
+    mcp.run(transport="streamable-http", host=MCP_HOST, port=MCP_PORT)
