@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__crypto-portfolio__get_portfolio_status",
+      "mcp__crypto-portfolio__get_recommendations",
+      "mcp__crypto-portfolio__screen_swap_targets",
+      "mcp__crypto-portfolio__update_portfolio_config",
+      "mcp__crypto-portfolio__get_daily_report",
+      "mcp__crypto-portfolio__refresh_cost_basis"
+    ]
+  }
+}

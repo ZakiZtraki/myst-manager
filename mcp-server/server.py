@@ -20,7 +20,7 @@ import os
 import sys
 from pathlib import Path
 
-from mcp.server.mcpserver.server import MCPServer as FastMCP
+from mcp.server.fastmcp import FastMCP
 
 # Resolve crypto-portfolio package relative to this file
 _REPO_ROOT = Path(__file__).parent.parent
@@ -28,8 +28,14 @@ sys.path.insert(0, str(_REPO_ROOT / "crypto-portfolio" / "src"))
 
 from crypto_portfolio.api_client import COINGECKO_ID_MAP, CoinGeckoClient
 from crypto_portfolio.manager import PortfolioManager
+from crypto_portfolio.myst_wallet import MystWalletClient
 from crypto_portfolio.screener import ScreenerConfig, run_screener
 from crypto_portfolio.tax import TaxLotTracker
+from crypto_portfolio.web3_wallet import (
+    MYST_POLYGON_CONTRACT,
+    POLYGON_CHAIN_ID,
+    BinanceWeb3WalletClient,
+)
 from scheduler import TaskScheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -42,19 +48,24 @@ PORTFOLIO_FILE = os.getenv("PORTFOLIO_FILE", "/data/portfolio.json")
 USE_BINANCE = os.getenv("USE_BINANCE", "false").lower() == "true"
 MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
 MCP_PORT = int(os.getenv("MCP_PORT", "8000"))
+MYST_WALLET_ADDRESS = os.getenv("MYST_WALLET_ADDRESS", "")
 
 # ---------------------------------------------------------------------------
 # Server + scheduler initialisation
 # ---------------------------------------------------------------------------
 mcp = FastMCP(
     "Crypto Portfolio",
+    host=MCP_HOST,
+    port=MCP_PORT,
     instructions=(
         "Manage and monitor a cryptocurrency portfolio. "
         "Supports both cash-mode (BUY/SELL) and swap-only mode for MYST node operators "
         "who earn MYST tokens and rebalance entirely via crypto-to-crypto swaps. "
         "Key tools: get_portfolio_status, get_recommendations (returns SWAP actions with "
         "routing when swap_routes is configured), update_portfolio_config (set targets and "
-        "myst_balance), record_swap (log a completed swap and update holdings), "
+        "swap settings), record_swap (log a completed swap and update wallet balances), "
+        "transfer_asset_to_trade_account (move assets from Binance Funding to Spot), "
+        "preview_web3_swap / execute_web3_swap for Binance Web3 Wallet on-chain swaps, "
         "screen_swap_targets (rank destination assets by Sortino/RS/liquidity composite score). "
         "Use schedule_task / list_scheduled_tasks / cancel_scheduled_task to automate "
         "recurring operations. Use trigger_task_now to run any task immediately."
@@ -69,6 +80,14 @@ scheduler = TaskScheduler(PORTFOLIO_FILE, USE_BINANCE)
 # ---------------------------------------------------------------------------
 def _portfolio_manager() -> PortfolioManager:
     return PortfolioManager(PORTFOLIO_FILE, use_binance=USE_BINANCE)
+
+
+def _web3_wallet() -> BinanceWeb3WalletClient:
+    return BinanceWeb3WalletClient()
+
+
+def _myst_wallet() -> MystWalletClient:
+    return MystWalletClient()
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +184,73 @@ def sync_from_binance() -> str:
 
 
 @mcp.tool()
+def refresh_cost_basis() -> str:
+    """Fetch trade history from Binance and update avg_purchase_price for all holdings.
+
+    Tries USDT, FDUSD, BUSD, and USDC quote pairs for each asset.
+    Holdings with no Binance buy trades (e.g. MYST earned as node rewards) are left unchanged.
+    Requires BINANCE_API_KEY + BINANCE_API_SECRET.
+    """
+    try:
+        pm = PortfolioManager(PORTFOLIO_FILE, use_binance=True)
+        updated = pm.refresh_cost_basis()
+        if not updated:
+            return "No trade data or historical prices found — avg_purchase_price unchanged."
+        lines = [f"Cost basis updated for {len(updated)} asset(s):"]
+        for symbol, info in updated.items():
+            source = info['source']
+            price = info['price']
+            if source == 'binance_trades':
+                lines.append(f"  {symbol}: ${price:,.6f}  (from Binance trade history)")
+            else:
+                days = info.get('days', '?')
+                lines.append(f"  {symbol}: ${price:,.6f}  (CoinGecko {days}d historical average)")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def diagnose_trade_history(asset: str, lookback_days: int = 730) -> str:
+    """Diagnose why trade history may not be found for an asset.
+
+    Reports how many Spot trades and Convert records were found per pair,
+    any API errors, and sample raw records. Useful for debugging cost basis issues.
+
+    Args:
+        asset:         Asset symbol to inspect (e.g. 'POL', 'BNB')
+        lookback_days: How far back to check Convert history (default: 730 days)
+    """
+    try:
+        from crypto_portfolio.api_client import BinanceClient
+        client = BinanceClient()
+        report = client.diagnose_trade_history(asset, lookback_days)
+        lines = [f"TRADE HISTORY DIAGNOSTIC — {report['asset']}\n",
+                 f"Symbols tried: {report['symbols_tried']}\n",
+                 "SPOT PAIRS:"]
+        for pair, data in report['spot'].items():
+            if 'error' in data:
+                lines.append(f"  {pair}: ERROR — {data['error']}")
+            else:
+                lines.append(f"  {pair}: {data['total']} trades, {data['buys']} buys"
+                             + (" ✓ sample: " + str(data.get('sample', [])) if data['buys'] else ""))
+        conv = report['convert']
+        lines += [
+            f"\nCONVERT HISTORY:",
+            f"  Windows fetched: {conv['windows_fetched']}  failed: {conv['windows_failed']}",
+            f"  Total records:   {conv['total_records']}",
+            f"  Matching:        {conv['matching_records']}",
+        ]
+        if conv['errors']:
+            lines.append(f"  Errors: {conv['errors']}")
+        if conv['sample']:
+            lines.append(f"  Sample: {conv['sample']}")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
 def transfer_myst_to_trade_account(amount: float = -1) -> str:
     """Transfer MYST from Binance Funding Wallet to Spot (trade) account.
 
@@ -191,29 +277,36 @@ def transfer_myst_to_trade_account(amount: float = -1) -> str:
 
 
 @mcp.tool()
-def transfer_asset_to_trade_account(asset: str, amount: float = -1) -> str:
-    """Transfer any asset from Binance Funding Wallet to Spot account via Universal Transfer.
+def transfer_asset_to_trade_account(
+    asset: str,
+    amount: float,
+    keep_reserve: float = 0,
+) -> str:
+    """Transfer an asset from Binance Funding Wallet to Spot account.
 
-    Use this to move POL, TRX, BNB, etc. from Funding to Spot so they can be swapped.
+    Requires BINANCE_API_KEY + BINANCE_API_SECRET with permission for internal
+    universal transfers. This does not place a trade.
 
     Args:
-        asset:  Symbol to transfer (e.g. 'POL', 'TRX', 'BNB').
-        amount: Amount to transfer. -1 (default) = transfer full Funding balance.
+        asset:        Asset symbol to transfer, e.g. 'POL', 'TRX', 'BNB'.
+        amount:       Amount to transfer. Use -1 to transfer all above keep_reserve.
+        keep_reserve: Amount to leave in Funding wallet when amount=-1.
     """
     try:
-        from crypto_portfolio.api_client import BinanceClient
-        client = BinanceClient()
-
-        if amount < 0:
-            funding_bal = client.get_funding_wallet_balance(asset.upper())
-            if funding_bal <= 0:
-                return f"Nothing to transfer: {asset.upper()} Funding balance is 0."
-            amount = funding_bal
-
-        result = client.transfer_to_spot(asset.upper(), amount)
+        pm = PortfolioManager(PORTFOLIO_FILE, use_binance=True)
+        result = pm.transfer_asset_to_spot(asset, amount, keep_reserve=keep_reserve)
+        if result['status'] == 'transferred':
+            return (
+                f"Transfer complete: {result['transferred']} {result['asset']} "
+                f"Funding → Spot\n"
+                f"  Transaction ID:      {result['tran_id']}\n"
+                f"  Funding balance was: {result['funding_balance']} {result['asset']}\n"
+                f"  Reserve kept:        {result['kept_reserve']} {result['asset']}"
+            )
         return (
-            f"Transfer complete: {amount} {asset.upper()} → Spot account\n"
-            f"  Transaction ID: {result.get('tranId', result)}"
+            f"Transfer skipped: {result['reason']}\n"
+            f"  Funding balance: {result['funding_balance']} {result['asset']}\n"
+            f"  Reserve kept:    {result['kept_reserve']} {result['asset']}"
         )
     except Exception as exc:
         return f"Error: {exc}"
@@ -260,7 +353,6 @@ def execute_binance_convert(from_asset: str, to_asset: str, from_amount: float) 
     """
     try:
         from crypto_portfolio.api_client import BinanceClient
-        import time
         client = BinanceClient()
         q = client.get_convert_quote(from_asset, to_asset, from_amount)
         quote_id = q.get('quoteId')
@@ -344,10 +436,10 @@ def record_swap(
     to_symbol: str,
     to_amount: float,
 ) -> str:
-    """Record a completed crypto-to-crypto swap, updating holdings and myst_balance.
+    """Record a completed crypto-to-crypto swap, updating wallet balances.
 
-    Swaps FROM MYST deduct from myst_balance (your node-income pool).
-    All other swaps deduct from holdings.
+    Wallet-first configs deduct from Binance Spot, then Funding, then Web3.
+    Legacy flat configs still deduct from holdings/myst_balance.
 
     Args:
         from_symbol: Asset you sold/swapped away (e.g. 'MYST', 'POL')
@@ -362,6 +454,335 @@ def record_swap(
             f"{to_amount} {to_symbol.upper()}\n"
             f"Holdings updated. Run get_portfolio_status to see new allocation."
         )
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def preview_binance_swap(
+    from_symbol: str,
+    to_symbol: str,
+    from_amount: float = -1,
+    amount_usd: float = -1,
+    prefer_convert: bool = True,
+) -> str:
+    """Preview a Binance token swap without executing it.
+
+    Requires BINANCE_API_KEY + BINANCE_API_SECRET.
+
+    Args:
+        from_symbol:    Asset to swap from (e.g. 'MYST', 'POL').
+        to_symbol:      Asset to receive (e.g. 'BNB', 'USDT').
+        from_amount:    Amount of from_symbol to swap. -1 = use amount_usd.
+        amount_usd:     Approximate USD value to swap. -1 = use from_amount.
+        prefer_convert: Try Binance Convert first, then Spot fallback.
+    """
+    try:
+        pm = PortfolioManager(PORTFOLIO_FILE, use_binance=True)
+        preview = pm.preview_binance_swap(
+            from_symbol,
+            to_symbol,
+            from_amount=None if from_amount < 0 else from_amount,
+            amount_usd=None if amount_usd < 0 else amount_usd,
+            prefer_convert=prefer_convert,
+        )
+        return json.dumps(preview, indent=2, default=str)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def execute_binance_swap(
+    from_symbol: str,
+    to_symbol: str,
+    from_amount: float = -1,
+    amount_usd: float = -1,
+    confirm: bool = False,
+    prefer_convert: bool = True,
+    quote_id: str = "",
+) -> str:
+    """Execute a Binance token swap and record actual filled amounts.
+
+    Live trading is blocked unless confirm=True.
+
+    Args:
+        from_symbol:    Asset to swap from (e.g. 'MYST', 'POL').
+        to_symbol:      Asset to receive (e.g. 'BNB', 'USDT').
+        from_amount:    Amount of from_symbol to swap. -1 = use amount_usd.
+        amount_usd:     Approximate USD value to swap. -1 = use from_amount.
+        confirm:        Must be true for live execution.
+        prefer_convert: Try Binance Convert first, then Spot fallback.
+        quote_id:       Optional Convert quote ID to accept.
+    """
+    try:
+        pm = PortfolioManager(PORTFOLIO_FILE, use_binance=True)
+        result = pm.execute_binance_swap(
+            from_symbol,
+            to_symbol,
+            from_amount=None if from_amount < 0 else from_amount,
+            amount_usd=None if amount_usd < 0 else amount_usd,
+            confirm=confirm,
+            prefer_convert=prefer_convert,
+            quote_id=quote_id or None,
+        )
+        return json.dumps(result, indent=2, default=str)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def get_web3_wallet_status() -> str:
+    """Return Binance Web3 Wallet connection status and configured addresses."""
+    try:
+        client = _web3_wallet()
+        return json.dumps(
+            {
+                "status": client.status(),
+                "addresses": client.addresses(),
+                "chains": client.chains(),
+            },
+            indent=2,
+            default=str,
+        )
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def get_web3_token_balance(
+    symbol: str = "",
+    token_address: str = "",
+    chain_id: str = "",
+) -> str:
+    """Return Binance Web3 Wallet token balances.
+
+    Args:
+        symbol:        Optional token symbol filter, e.g. 'MYST' or 'USDT'.
+        token_address: Optional full token contract address.
+        chain_id:      Optional Binance chain ID, e.g. '137' for Polygon.
+    """
+    try:
+        result = _web3_wallet().balance(
+            symbol=symbol or None,
+            token_address=token_address or None,
+            chain_id=chain_id or None,
+        )
+        return json.dumps(result, indent=2, default=str)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def get_web3_transaction_history(
+    chain_id: str = "",
+    tx_type: str = "all",
+    size: int = 20,
+    next_cursor: str = "",
+) -> str:
+    """Return Binance Web3 Wallet transaction history.
+
+    Args:
+        chain_id:     Optional Binance chain ID.
+        tx_type:      'all', 'pending', or 'confirmed'.
+        size:         Results per page, max 100.
+        next_cursor:  Pagination cursor from a previous response.
+    """
+    try:
+        result = _web3_wallet().tx_history(
+            chain_id=chain_id or None,
+            tx_type=tx_type,
+            size=min(size, 100),
+            next_cursor=next_cursor or None,
+        )
+        return json.dumps(result, indent=2, default=str)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def get_myst_wallet_balances(
+    address: str = "",
+    chains_csv: str = "",
+) -> str:
+    """Return on-chain MYST balances for a wallet address.
+
+    Checks known MYST contracts on Polygon, BSC, and Ethereum by default. This
+    does not use Binance Web3 Wallet and does not require wallet authentication.
+
+    Args:
+        address:    EVM wallet address. Blank uses MYST_WALLET_ADDRESS env var.
+        chains_csv: Optional comma-separated chain keys: polygon,bsc,ethereum.
+    """
+    try:
+        wallet_address = address or MYST_WALLET_ADDRESS
+        if not wallet_address:
+            return "Error: address is required or set MYST_WALLET_ADDRESS"
+        chains = [c.strip() for c in chains_csv.split(",") if c.strip()] or None
+        result = _myst_wallet().get_balances(wallet_address, chains=chains)
+        return json.dumps(result, indent=2, default=str)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def get_onchain_token_balances(
+    token: str,
+    address: str = "",
+    chains_csv: str = "",
+) -> str:
+    """Return on-chain balances for a supported wallet token.
+
+    Supported tokens: MYST, POL. POL includes native Polygon POL balance.
+
+    Args:
+        token:      Token symbol, e.g. 'MYST' or 'POL'.
+        address:    EVM wallet address. Blank uses MYST_WALLET_ADDRESS env var.
+        chains_csv: Optional comma-separated chain keys. For POL: polygon,ethereum.
+    """
+    try:
+        wallet_address = address or MYST_WALLET_ADDRESS
+        if not wallet_address:
+            return "Error: address is required or set MYST_WALLET_ADDRESS"
+        chains = [c.strip() for c in chains_csv.split(",") if c.strip()] or None
+        result = _myst_wallet().get_token_balances(wallet_address, token, chains=chains)
+        return json.dumps(result, indent=2, default=str)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def preview_web3_swap(
+    from_token_qty: float,
+    from_token: str = MYST_POLYGON_CONTRACT,
+    to_token: str = "",
+    chain_id: str = POLYGON_CHAIN_ID,
+    slippage: str = "",
+) -> str:
+    """Get a Binance Web3 Wallet market-order quote without executing a swap.
+
+    Defaults to MYST on Polygon as the source token. Provide a full destination
+    token contract address; do not use a symbol for to_token.
+
+    Args:
+        from_token_qty: Source token amount in human-readable units.
+        from_token:     Full source token contract address.
+        to_token:       Full destination token contract address.
+        chain_id:       Binance chain ID, e.g. '137' for Polygon.
+        slippage:       Optional slippage, e.g. '2.5'; blank uses CLI default.
+    """
+    try:
+        if not to_token:
+            return "Error: to_token contract address is required"
+        result = _web3_wallet().quote_swap(
+            from_token_qty=from_token_qty,
+            from_token=from_token,
+            to_token=to_token,
+            chain_id=chain_id,
+            slippage=slippage or None,
+        )
+        return json.dumps(result, indent=2, default=str)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def execute_web3_swap(
+    from_token_qty: float,
+    from_token: str = MYST_POLYGON_CONTRACT,
+    to_token: str = "",
+    chain_id: str = POLYGON_CHAIN_ID,
+    slippage: str = "",
+    mev: bool = True,
+    gas_level: str = "HIGH",
+    confirm: bool = False,
+) -> str:
+    """Execute a Binance Web3 Wallet market-order swap.
+
+    Live on-chain execution is blocked unless confirm=True. Without confirmation,
+    this returns a quote instead.
+
+    Args:
+        from_token_qty: Source token amount in human-readable units.
+        from_token:     Full source token contract address.
+        to_token:       Full destination token contract address.
+        chain_id:       Binance chain ID, e.g. '137' for Polygon.
+        slippage:       Optional slippage, e.g. '2.5'; blank uses CLI default.
+        mev:            Whether to enable MEV protection.
+        gas_level:      LOW, MEDIUM, or HIGH.
+        confirm:        Must be true for live execution.
+    """
+    try:
+        if not to_token:
+            return "Error: to_token contract address is required"
+        client = _web3_wallet()
+        if not confirm:
+            quote = client.quote_swap(
+                from_token_qty=from_token_qty,
+                from_token=from_token,
+                to_token=to_token,
+                chain_id=chain_id,
+                slippage=slippage or None,
+            )
+            return json.dumps(
+                {
+                    "status": "confirmation_required",
+                    "message": "Live Web3 swap not executed. Re-run with confirm=True.",
+                    "quote": quote,
+                },
+                indent=2,
+                default=str,
+            )
+
+        lock = client.tx_lock(chain_id)
+        result = client.execute_swap(
+            from_token_qty=from_token_qty,
+            from_token=from_token,
+            to_token=to_token,
+            chain_id=chain_id,
+            slippage=slippage or None,
+            mev=mev,
+            gas_level=gas_level,
+        )
+        return json.dumps(
+            {
+                "status": "submitted",
+                "message": (
+                    "Web3 swap submitted. Check get_web3_swap_status until "
+                    "status is FINISHED or FAILED."
+                ),
+                "tx_lock": lock,
+                "result": result,
+            },
+            indent=2,
+            default=str,
+        )
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def get_web3_swap_status(
+    order_id: str = "",
+    status: str = "",
+    chain_id: str = "",
+    page_size: int = 20,
+) -> str:
+    """Return Binance Web3 Wallet market-order status.
+
+    Args:
+        order_id:  Optional specific market order ID.
+        status:    Optional status filter: PENDING, FINISHED, or FAILED.
+        chain_id:  Optional Binance chain ID.
+        page_size: Results per page, max 100.
+    """
+    try:
+        result = _web3_wallet().market_order_status(
+            order_id=order_id or None,
+            status=status or None,
+            chain_id=chain_id or None,
+            page_size=min(page_size, 100),
+        )
+        return json.dumps(result, indent=2, default=str)
     except Exception as exc:
         return f"Error: {exc}"
 
@@ -741,4 +1162,4 @@ def scheduler_results() -> str:
 
 if __name__ == "__main__":
     logger.info("Starting Crypto Portfolio MCP Server on %s:%d", MCP_HOST, MCP_PORT)
-    mcp.run(transport="streamable-http", host=MCP_HOST, port=MCP_PORT)
+    mcp.run(transport="streamable-http")
