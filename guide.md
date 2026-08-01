@@ -3,7 +3,7 @@
 This repo contains two components:
 
 - **`crypto-portfolio/`** — Python library + CLI for portfolio analysis
-- **`mcp-server/`** — MCP server that exposes portfolio tools to Claude via SSE
+- **`mcp-server/`** — MCP server that exposes portfolio tools to Claude via Streamable HTTP
 
 ---
 
@@ -13,6 +13,7 @@ This repo contains two components:
 - Docker + Docker Compose (for the MCP server)
 - A CoinGecko API account (free tier works)
 - Binance API key (optional — for live balance sync)
+- Web3 automation wallet private key (optional — for on-chain MYST harvesting)
 
 ---
 
@@ -50,7 +51,7 @@ Edit `portfolio.json` with your actual wallet balances. Key fields:
 | `target_allocation` | Desired % per asset (must sum to 1.0) |
 | `swap_routes` | (MYST mode) Allowed swap pairs per asset |
 | `swap_config.min_swap_usd` | Minimum swap size in USD |
-| `swap_config.myst_keep_reserve` | MYST amount never to touch |
+| `swap_config.myst_keep_reserve` | MYST amount never to touch (node staking reserve) |
 
 The portfolio manager aggregates wallet assets into flat holdings internally for
 analysis, recommendations, and reports.
@@ -62,7 +63,7 @@ export BINANCE_API_KEY="your_read_only_key"
 export BINANCE_API_SECRET="your_api_secret"
 ```
 
-Use **read-only** keys. Never enable withdrawal permissions.
+Use **read-only** keys unless you also need transfers (requires "Enable Transfers between Spot and Funding Wallet" permission).
 
 ### CLI usage
 
@@ -87,14 +88,14 @@ pytest tests/
 
 ## Part 2: MCP Server
 
-The MCP server wraps the portfolio library and exposes all tools to Claude via Server-Sent Events (SSE).
+The MCP server wraps the portfolio library and exposes all tools to Claude via **Streamable HTTP** (the current MCP transport standard).
 
 ### Local (no Docker)
 
 ```bash
 cd mcp-server
 
-# Install dependencies (includes the MCP SDK and APScheduler)
+# Install dependencies (includes the MCP SDK, APScheduler, web3)
 pip install -r requirements.txt
 
 # Configure environment
@@ -107,7 +108,7 @@ cp .env.example .env
 python server.py
 ```
 
-The server listens at `http://localhost:8000/sse` by default.
+The server listens at `http://localhost:8000/mcp` by default.
 
 ### Docker (recommended for production)
 
@@ -117,20 +118,12 @@ The Docker build context is the **repo root** (it needs both `crypto-portfolio/`
 # From the repo root:
 cd mcp-server
 cp .env.example .env
-# Edit .env — set PORTFOLIO_FILE, USE_BINANCE, MCP_API_KEY, etc.
+# Edit .env — set PORTFOLIO_FILE, USE_BINANCE, API keys, etc.
 
 docker compose up -d
 ```
 
-This creates a named volume `mcp_data` for `/data/portfolio.json`.
-
-#### Upload your portfolio.json into the container
-
-```bash
-docker cp /path/to/your/portfolio.json mcp-server:/data/portfolio.json
-```
-
-Or place it on a host path and bind-mount instead of using the named volume.
+The compose file bind-mounts your `portfolio.json` directly from the host path.
 
 ### Environment variables
 
@@ -143,6 +136,10 @@ Or place it on a host path and bind-mount instead of using the named volume.
 | `MCP_HOST` | `0.0.0.0` | Bind address |
 | `MCP_PORT` | `8000` | Bind port |
 | `MCP_API_KEY` | _(empty)_ | Optional bearer-token auth (`Authorization: Bearer <key>`) |
+| `WEB3_PRIVATE_KEY` | _(empty)_ | Private key of the on-chain automation wallet (hex, no 0x prefix) |
+| `POLYGON_RPC_URL` | `https://polygon-rpc.com` | Polygon JSON-RPC endpoint |
+| `BINANCE_POL_DEPOSIT_ADDRESS` | _(empty)_ | Your Binance **Funding** wallet deposit address for POL (Polygon network) |
+| `ONEINCH_API_KEY` | _(empty)_ | Optional 1inch Developer Portal key for better DEX routing |
 
 ### HTTPS via Zoraxy reverse proxy
 
@@ -151,25 +148,23 @@ Or place it on a host path and bind-mount instead of using the named volume.
    - **Matching hostname**: `mcp.yourdomain.com`
    - **Target**: `http://127.0.0.1:8000` (or the container IP/name if Zoraxy is in the same Docker network)
 3. Enable **TLS/HTTPS** and let Zoraxy issue a Let's Encrypt certificate for the subdomain
-4. Under **Advanced settings** for the rule, enable **"Disable Response Buffering"** — this is required for SSE to stream correctly
-5. Set the **read timeout** to at least `3600` seconds so long-lived SSE connections are not dropped
+4. Under **Advanced settings** for the rule, enable **"Disable Response Buffering"**
+5. Set the **read timeout** to at least `3600` seconds
 
-The MCP server will then be reachable at `https://mcp.yourdomain.com/sse`.
-
-> **Note**: The `proxy-config/mcp-server.conf` file in this repo is for nginx/SWAG and is not needed with Zoraxy — all configuration is done through the Zoraxy UI.
+The MCP server will then be reachable at `https://mcp.yourdomain.com/mcp`.
 
 ---
 
 ## Part 3: Connect Claude to the MCP Server
 
-In your Claude Code settings (`~/.claude/settings.json` or project `.claude/settings.json`):
+### Claude Code (`~/.claude/settings.json`)
 
 ```json
 {
   "mcpServers": {
     "crypto-portfolio": {
-      "type": "sse",
-      "url": "http://localhost:8000/sse"
+      "type": "streamable-http",
+      "url": "http://localhost:8000/mcp"
     }
   }
 }
@@ -181,8 +176,8 @@ For a remote server with auth:
 {
   "mcpServers": {
     "crypto-portfolio": {
-      "type": "sse",
-      "url": "https://mcp.yourdomain.com/sse",
+      "type": "streamable-http",
+      "url": "https://mcp.yourdomain.com/mcp",
       "headers": {
         "Authorization": "Bearer your_mcp_api_key"
       }
@@ -193,57 +188,124 @@ For a remote server with auth:
 
 Restart Claude Code. You should see the `crypto-portfolio` server listed in `/mcp`.
 
+### Claude Desktop App (`claude_desktop_config.json`)
+
+On **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`  
+On **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "crypto-portfolio": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://localhost:8000/mcp"
+      ]
+    }
+  }
+}
+```
+
+Restart the Claude desktop app after saving. The MCP container must be running for the connection to succeed.
+
 ---
 
 ## Available MCP Tools
 
-| Tool | Descripti on |
+### Portfolio & Analysis
+
+| Tool | Description |
 | --- | --- |
 | `get_portfolio_status` | Current values, P&L, allocation |
-| `get_recommendations` | Prioritised actions (BUY / SELL / SWAP / DCA) |
+| `get_recommendations` | Prioritised actions (SWAP / DCA / profit-taking) |
 | `get_daily_report` | Full daily summary |
 | `check_prices` | Live prices for given symbols |
-| `update_portfolio_config` | Update targets, wallet-derived MYST balance, swap_routes |
-| `record_swap` | Log a completed crypto-to-crypto swap |
-| `transfer_myst_to_trade_account` | Move MYST from Binance Funding Wallet → Spot account (auto or explicit amount) |
-| `sync_from_binance` | Pull live balances from Binance |
+| `update_portfolio_config` | Update targets, MYST balance, swap_routes |
+| `record_swap` | Log a completed crypto-to-crypto swap and update holdings |
+| `sync_from_binance` | Pull live balances from Binance Spot + Funding wallets |
 | `export_portfolio_csv` | Snapshot to CSV file |
 | `calculate_tax_summary` | Realised gains via FIFO / LIFO / HIFO |
 | `screen_swap_targets` | Rank destination assets by Sortino / RS / liquidity |
-| `schedule_task` | Schedule recurring task (cron or interval) |
+
+### Binance Transfers & Swaps
+
+| Tool | Description |
+| --- | --- |
+| `transfer_asset_to_trade_account` | Move any asset from Binance Funding → Spot (POL, TRX, BNB, etc.) |
+| `preview_binance_convert` | Get a live Binance Convert quote without executing |
+| `execute_binance_convert` | Execute a Binance Convert swap (Spot → Spot) |
+
+### On-chain Web3 (Polygon)
+
+| Tool | Description |
+| --- | --- |
+| `get_web3_myst_balance` | MYST + POL balances in the automation wallet |
+| `run_myst_harvest` | Full pipeline: MYST → POL (1inch/QuickSwap) → send to Binance Exchange |
+| `send_web3_pol_to_exchange` | Send POL from automation wallet to Binance Funding deposit address |
+
+### Scheduled Tasks
+
+| Tool | Description |
+| --- | --- |
+| `schedule_task` | Schedule a recurring task (`cron` or `interval`) |
 | `list_scheduled_tasks` | List active scheduled tasks |
 | `cancel_scheduled_task` | Remove a scheduled task |
 | `trigger_task_now` | Run a task immediately |
 | `get_task_results` | Recent task execution history |
 
+**Valid task types**: `daily_report`, `sync_binance`, `check_recommendations`, `get_status`, `transfer_myst`, `harvest_myst`
+
 ---
 
 ## MYST Node Operator Workflow
 
-MYST node operators earn MYST tokens and rebalance entirely via crypto-to-crypto swaps (no fiat in or out). The recommended setup:
+MYST is **not listed on Binance Exchange** — it cannot be deposited to a Binance Spot wallet directly. Node operators are paid in Polygon MYST and must convert on-chain first.
 
-1. Copy `examples/portfolio.myst.example.json` → `portfolio.json`
-2. Put your current MYST earnings under the correct wallet in `wallets.binance.*.assets`
-3. Configure `swap_routes` for your exchange (e.g. MYST→POL, MYST→BNB)
-4. **Transfer MYST to your Spot account** — Mysterium node payouts land in the Binance Funding Wallet, not the trading account. Call `transfer_myst_to_trade_account` to move them over automatically:
-   - `amount=-1` (default): transfers everything above `myst_keep_reserve`, skips if below `min_swap_usd`
-   - `amount=500`: transfers exactly 500 MYST
-   - Requires `USE_BINANCE=true` and a Binance API key with **"Enable Transfers between Spot and Funding Wallet"** permission
-5. Ask Claude: _"What should I swap my MYST earnings into?"_
-   - Claude calls `get_recommendations` → returns SWAP actions with routing
-6. Execute the swap on your exchange, then call `record_swap` to update holdings
-7. Use `screen_swap_targets` to discover new candidate assets ranked by risk-adjusted performance
-
-### Automate the Funding→Spot transfer
-
-Schedule it to run daily so MYST is always ready to trade:
+### Correct cash-out pipeline
 
 ```
+Mysterium node (Polygon)
+  └─ earn MYST → automation wallet
+       └─ run_myst_harvest (MCP tool)
+            ├─ swap MYST → POL via 1inch / QuickSwap (on-chain)
+            └─ send POL → Binance Funding deposit address (on-chain)
+                  └─ transfer_asset_to_trade_account('POL')
+                        └─ execute_binance_convert('POL', 'BNB', ...)
+                              └─ record_swap(...)
+```
+
+### Step-by-step
+
+1. Copy `examples/portfolio.myst.example.json` → `portfolio.json`
+2. Set Web3 env vars in your `.env`:
+
+   ```dotenv
+   WEB3_PRIVATE_KEY=your_hex_private_key
+   POLYGON_RPC_URL=https://polygon-rpc.com
+   BINANCE_POL_DEPOSIT_ADDRESS=0xYourBinanceFundingDepositAddress
+   ONEINCH_API_KEY=optional_but_recommended
+   ```
+
+3. Check your automation wallet: call `get_web3_myst_balance`
+4. Harvest when ready: call `run_myst_harvest` (skips automatically if below `min_value_usd`)
+5. Wait ~1–2 minutes for Binance to credit the POL deposit
+6. Move POL to Spot: `transfer_asset_to_trade_account('POL')`
+7. Preview a swap: `preview_binance_convert('POL', 'BNB', amount)`
+8. Execute: `execute_binance_convert('POL', 'BNB', amount)`
+9. Record it: `record_swap('POL', amount, 'BNB', received)`
+
+### Automate the harvest
+
+Schedule it to run daily so MYST is automatically converted and forwarded:
+
+```python
 schedule_task(
-  task_type="transfer_myst",
+  task_type="harvest_myst",
   trigger_type="cron",
   trigger_config='{"hour": 8, "minute": 0}',
-  label="Move MYST to Spot"
+  label="Daily MYST harvest"
 )
 ```
 
@@ -253,7 +315,7 @@ To screen with stricter liquidity requirements:
 
 ```python
 screen_swap_targets(
-  source_symbol="MYST",
+  source_symbol="POL",
   top_n=5,
   screener_config_json='{"min_market_cap": 200000000, "max_spread_bps": 50}'
 )
@@ -284,7 +346,7 @@ sensor:
 
 ### Scheduled tasks via MCP
 
-```code
+```python
 schedule_task(
   task_type="daily_report",
   trigger_type="cron",
@@ -303,13 +365,12 @@ schedule_task(
 
 **Missing price for an altcoin** — Check the symbol mapping in `crypto-portfolio/src/crypto_portfolio/api_client.py` and add a custom entry to `COINGECKO_ID_MAP`.
 
-**MCP server not appearing in Claude** — Confirm the SSE URL is reachable (`curl http://localhost:8000/sse`), then restart Claude Code.
+**MCP server not appearing in Claude** — Confirm the server is reachable (`curl http://localhost:8000/mcp`), then restart Claude Code / the desktop app.
 
-**Docker build fails** — Run `docker compose build` from the repo root (not from `mcp-server/`), since the build context is `..`.
+**Docker build fails** — Run `docker compose build` from the `mcp-server/` directory (the build context is set to `..` in the Dockerfile, so it resolves the repo root correctly).
 
-**Portfolio file not found inside container** — Either `docker cp` your JSON to `/data/portfolio.json`, or add a bind-mount in `docker-compose.yml`:
+**Portfolio file not found inside container** — Check the `volumes` bind-mount in `docker-compose.yml`; the host path must exist and point to a valid `portfolio.json`.
 
-```yaml
-volumes:
-  - /host/path/portfolio.json:/data/portfolio.json
-```
+**Web3 harvest fails with "insufficient funds"** — The automation wallet needs a small POL balance (~0.5 POL) to pay Polygon gas. Fund it directly from Binance or another source.
+
+**1inch API returns 400** — Add your `ONEINCH_API_KEY` (free at portal.1inch.dev); the fallback to QuickSwap still works without it but may give slightly worse rates.

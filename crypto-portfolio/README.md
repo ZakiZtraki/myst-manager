@@ -10,7 +10,8 @@ Python-based cryptocurrency portfolio monitoring, analysis, and recommendation s
 - **Action Recommendations**: Automated rebalancing, profit-taking, and DCA suggestions
 - **Tax Lot Tracking**: FIFO/LIFO/HIFO cost basis calculations
 - **Multiple Integrations**: Home Assistant, n8n, Telegram Bot support
-- **Binance API Support**: Direct exchange balance fetching
+- **Binance API Support**: Direct exchange balance fetching (Spot + Funding wallets), Convert swaps
+- **On-chain Web3 Harvesting**: Swap MYST → POL via 1inch/QuickSwap and forward to Binance automatically
 
 ## Quick Start
 
@@ -117,22 +118,24 @@ python -m crypto_portfolio sync --source binance
 ## Project Structure
 
 ```
-crypto-portfolio-export/
+crypto-portfolio/
 ├── src/crypto_portfolio/
 │   ├── __init__.py
-│   ├── manager.py          # Core portfolio manager
-│   ├── api_client.py       # CoinGecko/Binance API clients
+│   ├── manager.py          # Core portfolio manager (wallet-aware schema)
+│   ├── api_client.py       # CoinGecko + Binance API clients
 │   ├── analyzer.py         # Portfolio analysis
 │   ├── recommender.py      # Action recommendations
 │   ├── tax.py              # Tax lot tracking
+│   ├── screener.py         # Swap target ranking (Sortino/RS/liquidity)
+│   ├── web3_harvester.py   # On-chain MYST→POL harvest (Polygon/1inch/QuickSwap)
+│   ├── myst_wallet.py      # Mysterium node wallet helpers
+│   ├── web3_wallet.py      # Generic Web3 wallet utilities
 │   └── cli.py              # Command-line interface
 ├── examples/
 │   ├── portfolio.example.json
-│   ├── basic_usage.py
-│   ├── telegram_bot.py
-│   └── n8n_integration.py
+│   ├── portfolio.myst.example.json
+│   └── basic_usage.py
 ├── tests/
-│   └── test_portfolio.py
 ├── requirements.txt
 ├── setup.py
 └── README.md
