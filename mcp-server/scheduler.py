@@ -25,6 +25,7 @@ VALID_TASK_TYPES = [
     "check_recommendations",
     "get_status",
     "transfer_myst",
+    "harvest_myst",
 ]
 
 
@@ -77,6 +78,29 @@ class TaskScheduler:
                     f"(tran_id={result['tran_id']})"
                 )
             return f"Transfer skipped: {result['reason']}"
+
+        if task_type == "harvest_myst":
+            from crypto_portfolio.web3_harvester import harvester_from_env
+            from crypto_portfolio.api_client import CoinGeckoClient
+            h = harvester_from_env()
+            try:
+                prices = CoinGeckoClient().fetch_prices(["MYST"])
+                myst_price = prices.get("mysterium", {}).get("usd", 0.0)
+            except Exception:
+                myst_price = 0.0
+            swap_cfg = pm.portfolio_data.get("swap_config", {})
+            result = h.run_harvest(
+                myst_keep_reserve=float(swap_cfg.get("myst_keep_reserve", 5)),
+                min_value_usd=float(swap_cfg.get("min_swap_usd", 5)),
+                myst_price_usd=myst_price,
+            )
+            if result["status"] == "skipped":
+                return f"Harvest skipped: {result['reason']}"
+            pol_sent = result.get("pol_sent_to_exchange", 0)
+            return (
+                f"Harvest {result['status']}: sent {pol_sent:.4f} POL to Binance Exchange. "
+                f"Run transfer_asset_to_trade_account(POL) once deposit is credited."
+            )
 
         raise ValueError(f"Unknown task type '{task_type}'. Valid: {VALID_TASK_TYPES}")
 
