@@ -85,7 +85,7 @@ class PortfolioAnalyzer:
         
         # Calculate portfolio-wide daily change
         total_daily_change = sum(
-            (pos['current_value'] * pos['daily_change'] / 100)
+            (pos['current_value'] * (pos['daily_change'] or 0) / 100)
             for pos in results['positions']
         )
         results['portfolio_daily_change'] = (

@@ -313,6 +313,65 @@ def transfer_asset_to_trade_account(
 
 
 @mcp.tool()
+def preview_binance_convert(from_asset: str, to_asset: str, from_amount: float) -> str:
+    """Get a live Binance Convert quote without executing it.
+
+    Shows how much you would receive if you convert now. Quote expires in ~10 seconds.
+
+    Args:
+        from_asset:  Asset to sell (must be in Spot wallet), e.g. 'TRX', 'POL'
+        to_asset:    Asset to receive, e.g. 'BNB', 'ZEC'
+        from_amount: Amount of from_asset to convert
+    """
+    try:
+        from crypto_portfolio.api_client import BinanceClient
+        client = BinanceClient()
+        q = client.get_convert_quote(from_asset, to_asset, from_amount)
+        return (
+            f"Convert Quote:\n"
+            f"  {from_amount} {from_asset.upper()} → {q.get('toAmount', '?')} {to_asset.upper()}\n"
+            f"  Rate:     1 {from_asset.upper()} = {q.get('ratio', '?')} {to_asset.upper()}\n"
+            f"  Quote ID: {q.get('quoteId', '?')}\n"
+            f"  Valid:    ~10 seconds\n\n"
+            f"To execute: call execute_binance_convert with same arguments."
+        )
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def execute_binance_convert(from_asset: str, to_asset: str, from_amount: float) -> str:
+    """Execute a Binance Convert swap (Spot wallet → Spot wallet).
+
+    Fetches a live quote and immediately accepts it. Asset must be in Spot account.
+    After the swap, call record_swap to update portfolio.json.
+
+    Args:
+        from_asset:  Asset to sell (e.g. 'TRX', 'POL', 'BNB')
+        to_asset:    Asset to receive (e.g. 'BNB', 'ZEC', 'TRX')
+        from_amount: Amount of from_asset to convert
+    """
+    try:
+        from crypto_portfolio.api_client import BinanceClient
+        client = BinanceClient()
+        q = client.get_convert_quote(from_asset, to_asset, from_amount)
+        quote_id = q.get('quoteId')
+        to_amount = q.get('toAmount', 0)
+        if not quote_id:
+            return f"Quote failed: {q}"
+        result = client.accept_convert_quote(quote_id)
+        status = result.get('orderStatus', result.get('status', 'unknown'))
+        return (
+            f"Convert {status.upper()}\n"
+            f"  {from_amount} {from_asset.upper()} → {to_amount} {to_asset.upper()}\n"
+            f"  Order ID: {result.get('orderId', '?')}\n\n"
+            f"Run: record_swap('{from_asset.upper()}', {from_amount}, '{to_asset.upper()}', {to_amount})"
+        )
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
 def export_portfolio_csv(output_path: str = "/data/portfolio_export.csv") -> str:
     """Export current portfolio snapshot to a CSV file.
 
@@ -853,7 +912,7 @@ def schedule_task(
     """Schedule a recurring portfolio task.
 
     Args:
-        task_type:      'daily_report' | 'sync_binance' | 'check_recommendations' | 'get_status' | 'transfer_myst'
+        task_type:      'daily_report' | 'sync_binance' | 'check_recommendations' | 'get_status' | 'transfer_myst' | 'harvest_myst'
         trigger_type:   'cron' | 'interval'
         trigger_config: JSON trigger parameters.
                         cron example:     {"hour": 9, "minute": 0}  (daily at 09:00 UTC)
@@ -912,7 +971,7 @@ def trigger_task_now(task_type: str) -> str:
     """Execute a portfolio task immediately and return its output.
 
     Args:
-        task_type: 'daily_report' | 'sync_binance' | 'check_recommendations' | 'get_status' | 'transfer_myst'
+        task_type: 'daily_report' | 'sync_binance' | 'check_recommendations' | 'get_status' | 'transfer_myst' | 'harvest_myst'
     """
     try:
         return scheduler.run_task_now(task_type)
@@ -940,6 +999,138 @@ def get_task_results(limit: int = 10) -> str:
                 f"[{r['timestamp']}] {r['task_type']}  status={r['status']}",
                 f"  {snippet}\n",
             ]
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Web3 on-chain harvest tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_web3_myst_balance() -> str:
+    """Return MYST and POL balances in the on-chain automation wallet (Polygon network).
+
+    Requires WEB3_PRIVATE_KEY and POLYGON_RPC_URL in the server environment.
+    """
+    try:
+        from crypto_portfolio.web3_harvester import harvester_from_env
+        h = harvester_from_env()
+        myst = h.get_myst_balance()
+        pol  = h.get_pol_balance()
+        return (
+            f"Automation wallet: {h.address}\n"
+            f"  MYST : {myst:.6f}\n"
+            f"  POL  : {pol:.6f}  (gas reserve)"
+        )
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def send_web3_pol_to_exchange(amount: float = -1) -> str:
+    """Send POL from the automation wallet to Binance Exchange Funding address.
+
+    Use this to test the on-chain send step independently, or to forward POL
+    that already sits in the automation wallet without needing a MYST swap first.
+
+    Args:
+        amount: POL to send. -1 (default) = send everything above 0.5 POL gas reserve.
+    """
+    try:
+        from crypto_portfolio.web3_harvester import harvester_from_env
+        h = harvester_from_env()
+
+        pol_balance = h.get_pol_balance()
+        keep_gas = 0.5
+        to_send = (pol_balance - keep_gas) if amount < 0 else amount
+
+        if to_send <= 0:
+            return (
+                f"Nothing to send: automation wallet has {pol_balance:.6f} POL, "
+                f"keep_gas reserve is {keep_gas} POL."
+            )
+
+        result = h.send_pol_to_exchange(to_send, keep_gas=keep_gas)
+
+        if result["status"] == "skipped":
+            return f"Send skipped: {result['reason']}"
+
+        return (
+            f"Send {result['status'].upper()}\n"
+            f"  POL sent:    {result.get('pol_sent', 0):.6f}\n"
+            f"  Destination: {result.get('destination')}\n"
+            f"  Tx hash:     {result.get('tx_hash')}\n"
+            f"  Wallet balance before: {pol_balance:.6f} POL\n\n"
+            f"  Binance credits Funding in ~1-2 min (1 bundle confirmation).\n"
+            f"  Then call: transfer_asset_to_trade_account('POL')"
+        )
+    except Exception as exc:
+        return f"Error: {exc}"
+
+
+@mcp.tool()
+def run_myst_harvest(
+    myst_keep_reserve: float = 5.0,
+    min_value_usd: float = 5.0,
+    slippage_pct: float = 1.0,
+) -> str:
+    """Run the full on-chain MYST harvest pipeline.
+
+    Steps:
+      1. Check MYST balance in automation wallet (Polygon)
+      2. Swap MYST → POL via 1inch aggregator (falls back to QuickSwap)
+      3. Send POL to Binance Exchange Funding deposit address
+      4. (manual next step) call transfer_asset_to_trade_account then execute_binance_swap
+
+    Requires WEB3_PRIVATE_KEY, POLYGON_RPC_URL, BINANCE_POL_DEPOSIT_ADDRESS in env.
+
+    Args:
+        myst_keep_reserve: MYST to leave in wallet (default: 5 — for node staking).
+        min_value_usd:     Skip harvest if total swap value is below this USD amount.
+        slippage_pct:      Max DEX slippage % (default 1.0).
+    """
+    try:
+        from crypto_portfolio.web3_harvester import harvester_from_env
+        from crypto_portfolio.api_client import CoinGeckoClient
+
+        h = harvester_from_env()
+
+        try:
+            prices = CoinGeckoClient().fetch_prices(["MYST"])
+            myst_price = prices.get("mysterium", {}).get("usd", 0.0)
+        except Exception:
+            myst_price = 0.0
+
+        result = h.run_harvest(
+            myst_keep_reserve=myst_keep_reserve,
+            min_value_usd=min_value_usd,
+            myst_price_usd=myst_price,
+            slippage_pct=slippage_pct,
+        )
+
+        if result["status"] == "skipped":
+            return f"Harvest skipped: {result['reason']}"
+
+        lines = [f"Harvest {result['status'].upper()}"]
+        lines.append(f"  MYST balance before: {result.get('myst_balance', 0):.4f}")
+        if myst_price:
+            lines.append(f"  MYST price: ${myst_price:.4f}")
+
+        for step in result.get("steps", []):
+            lines.append(f"\n  Step: {step['step']}")
+            for k, v in step.items():
+                if k != "step":
+                    lines.append(f"    {k}: {v}")
+
+        pol_sent = result.get("pol_sent_to_exchange", 0)
+        if pol_sent:
+            lines.append(f"\n  POL sent to Exchange Funding: {pol_sent:.6f}")
+            lines.append(
+                "  Next: call transfer_asset_to_trade_account('POL') once deposit is credited"
+            )
         return "\n".join(lines)
     except Exception as exc:
         return f"Error: {exc}"

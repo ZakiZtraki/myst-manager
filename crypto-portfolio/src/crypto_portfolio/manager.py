@@ -176,7 +176,53 @@ class PortfolioManager:
             data.pop('myst_balance', None)
         with open(self.portfolio_file, 'w') as f:
             json.dump(data, f, indent=2)
-    
+
+    def _get_holdings(self) -> List[Dict]:
+        """Return flat list of all holdings, supporting both flat and wallets schema."""
+        if 'holdings' in self.portfolio_data:
+            return self.portfolio_data['holdings']
+        holdings = []
+        for exchange_data in self.portfolio_data.get('wallets', {}).values():
+            for account_data in exchange_data.values():
+                holdings.extend(account_data.get('assets', []))
+        return holdings
+
+    def _find_holding(self, symbol: str) -> Optional[Dict]:
+        """Find a holding by symbol (case-insensitive)."""
+        return next(
+            (h for h in self._get_holdings() if h['symbol'].upper() == symbol.upper()),
+            None,
+        )
+
+    def _add_to_holdings(self, asset_dict: Dict) -> None:
+        """Add a new holding, writing to the spot wallet under wallets schema."""
+        if 'holdings' in self.portfolio_data:
+            self.portfolio_data['holdings'].append(asset_dict)
+            return
+        spot = (
+            self.portfolio_data
+            .setdefault('wallets', {})
+            .setdefault('binance', {})
+            .setdefault('spot', {})
+        )
+        spot.setdefault('assets', []).append(asset_dict)
+
+    def _remove_from_holdings(self, holding: Dict) -> None:
+        """Remove a holding object from whichever list it lives in."""
+        if 'holdings' in self.portfolio_data:
+            try:
+                self.portfolio_data['holdings'].remove(holding)
+            except ValueError:
+                pass
+            return
+        for exchange_data in self.portfolio_data.get('wallets', {}).values():
+            for account_data in exchange_data.values():
+                try:
+                    account_data.get('assets', []).remove(holding)
+                    return
+                except ValueError:
+                    pass
+
     def sync_from_binance(self):
         """Sync holdings from Binance Spot and Funding wallets."""
         if not self.binance:
@@ -713,17 +759,10 @@ class PortfolioManager:
         Returns:
             Portfolio status with current values and P&L
         """
-        # Get symbols from holdings
-        symbols = [h['symbol'] for h in self.portfolio_data['holdings']]
-        
-        # Fetch current prices
+        holdings = self._get_holdings()
+        symbols = [h['symbol'] for h in holdings]
         prices = self.coingecko.fetch_prices(symbols)
-        
-        # Analyze portfolio
-        analysis = self.analyzer.analyze(
-            self.portfolio_data['holdings'],
-            prices
-        )
+        analysis = self.analyzer.analyze(holdings, prices)
         
         if format == 'json':
             return json.dumps(analysis, indent=2)
@@ -823,11 +862,7 @@ class PortfolioManager:
                 self._save_portfolio()
                 return
 
-            holding = next(
-                (h for h in self.portfolio_data['holdings']
-                 if h['symbol'].upper() == from_symbol.upper()),
-                None,
-            )
+            holding = self._find_holding(from_symbol)
             if not holding:
                 raise ValueError(f'{from_symbol} not found in holdings')
             if from_amount > holding['amount'] + 1e-9:
@@ -836,17 +871,13 @@ class PortfolioManager:
                 )
             holding['amount'] = max(0.0, holding['amount'] - from_amount)
             if holding['amount'] < 1e-9:
-                self.portfolio_data['holdings'].remove(holding)
+                self._remove_from_holdings(holding)
 
-        to_holding = next(
-            (h for h in self.portfolio_data['holdings']
-             if h['symbol'].upper() == to_symbol.upper()),
-            None,
-        )
+        to_holding = self._find_holding(to_symbol)
         if to_holding:
             to_holding['amount'] += to_amount
         else:
-            self.portfolio_data['holdings'].append({
+            self._add_to_holdings({
                 'symbol': to_symbol.upper(),
                 'amount': to_amount,
                 'avg_purchase_price': 0,
